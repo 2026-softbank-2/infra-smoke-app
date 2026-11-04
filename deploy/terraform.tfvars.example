@@ -1,0 +1,23 @@
+# hunter-infra 입력에 병합할 예시입니다. 이 저장소는 Terraform root가 아닙니다.
+# 이 파일을 통째로 적용하지 말고 실제 레지스트리 주소와 digest를 넣으세요.
+# 기존 applications 항목은 유지하고 smoke 항목을 추가하세요.
+deployment_stage = "services"
+
+applications = {
+  smoke = {
+    # 같은 linux/amd64 이미지를 ECR과 Artifact Registry에 복사한 뒤 사용합니다.
+    aws_image = "<ecr-repository-url>@sha256:<digest>"
+    gcp_image = "<artifact-registry-repository-url>/smoke@sha256:<digest>"
+
+    # host를 생략하면 smoke.sbhunter.site (현재 domain 기본 설정).
+    port        = 8080
+    health_path = "/health"
+
+    aws_weight = 100
+    gcp_weight = 100
+
+    # 이 map은 양쪽에 공통으로 적용됩니다. APP_ENV는 설정하지 마세요.
+    # APP_VERSION은 Docker 빌드 시 넣은 값을 그대로 사용합니다.
+    environment = {}
+  }
+}
