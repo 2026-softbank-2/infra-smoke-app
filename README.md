@@ -2,7 +2,7 @@
 
 AWS·GCP 배포 및 트래픽 전환 검증용 최소 FastAPI 애플리케이션입니다.
 Hunter의 ECS Fargate·Cloud Run에서 동일한 컨테이너 이미지를 실행합니다.
-DB·Redis·파일 저장소·클라우드 SDK 없이 동작하며, 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
+Redis는 선택적으로 연결하며, DB·파일 저장소·클라우드 SDK 없이 동작합니다. 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
 
 ## HTTP API
 
@@ -10,6 +10,9 @@ DB·Redis·파일 저장소·클라우드 SDK 없이 동작하며, 관제 기능
 |---|---|---|
 | `GET /health` | `{"status":"ok","env":"aws"}` | 앱 HTTP 응답 확인: HAProxy·AWS ALB 헬스체크와 Cloud Run 시작 검사 |
 | `GET /` | 서비스 이름, 실행 환경, 버전, 인스턴스 식별자 | 실제 응답 클라우드·배포 버전·프로세스 구분 |
+| `GET /cache/health` | Redis PING 성공 시 200, 미설정·연결 실패 시 503 | TLS·인증·연결 확인 |
+| `POST /cache/check` | PING·SET·GET·TTL·실제 만료 검사 결과 | 전부 통과하면 200, 실패·미설정이면 503 |
+| `GET /cache/items/1` | 고정 샘플과 `cache`·`source` | miss → hit, 캐시 장애 시 fixture 응답 |
 
 루트 응답 예시:
 
@@ -22,7 +25,7 @@ DB·Redis·파일 저장소·클라우드 SDK 없이 동작하며, 관제 기능
 }
 ```
 
-두 경로는 `200`과 `Cache-Control: no-store`를 반환합니다. `instance_id`는 프로세스 시작마다 생성되며 같은 프로세스의 요청에서는 유지됩니다. `/health`는 앱 응답만 검사하며 DB·캐시·파일 저장소 준비 상태를 보장하지 않습니다.
+두 기본 경로는 `200`과 `Cache-Control: no-store`를 반환합니다. `instance_id`는 프로세스 시작마다 생성되며 같은 프로세스의 요청에서는 유지됩니다. `/health`는 앱 응답만 검사하며 DB·캐시·파일 저장소 준비 상태를 보장하지 않습니다.
 
 ## 로컬 실행
 
@@ -89,9 +92,39 @@ done
 
 `env`는 최종 앱의 실행 클라우드를 나타내며, 앞에서 요청을 받은 HAProxy의 위치는 나타내지 않습니다. 소수의 요청이 설정 가중치와 정확히 같은 비율로 나오지는 않을 수 있습니다.
 
-현재 `foundation` 단계에는 앱 런타임·이미지 저장소가 없습니다. `services` 단계는 앱과 함께 Redis·파일 저장소·비밀 등의 리소스도 포함하며, VM 교체가 계획될 수 있습니다. 이미지 저장소가 아직 없다면 이미지 게시 순서도 인프라 담당자와 맞춰야 합니다. 이 저장소를 만드는 것만으로 클라우드 리소스·DNS가 생성되거나 앱이 배포되지는 않습니다.
+`hunter-infra`의 `registries` 단계에서 `application_repository_names = ["smoke"]`로 저장소를 먼저 준비합니다. 이미지 게시 후 `services`로 전환하며, `enable_file_services = false`이면 앱·Redis만 추가하고 파일 저장소·게이트웨이·복제 권한은 제외합니다. 단계 변경 시 VM 교체가 계획될 수 있으므로 실제 state의 전체 plan을 검토합니다.
 
-Terraform에서 주입하는 `CACHE_*`, `FILES_*` 값은 이 앱이 사용하거나 응답에 노출하지 않습니다. 앱이 이를 사용하지 않아도 현재 Terraform이 연결한 비밀은 런타임 시작을 위해 조회 가능해야 합니다.
+## Redis 연결과 검사
+
+Terraform이 주입하는 기존 규약을 사용합니다. 비밀번호와 CA는 각 클라우드의 비밀 저장소에서 컨테이너에 주입하며 앱 응답·로그에 노출하지 않습니다.
+
+| 환경변수 | 동작 |
+|---|---|
+| `CACHE_HOST` | 미설정이면 캐시 검사는 503, 기본 HTTP·fixture 응답은 정상 |
+| `CACHE_PORT` | 기본 6379, GCP는 실제 인스턴스의 포트 주입 |
+| `CACHE_TLS` | `true`만 허용, 서버 인증서와 호스트명 검증 |
+| `CACHE_PASSWORD` | 캐시 설정 시 필수 |
+| `CACHE_CA_CERT` | GCP Redis의 PEM CA 묶음. 미설정 시 시스템 신뢰 저장소 사용 |
+
+`POST /cache/check`는 요청마다 고유 키와 값을 생성해 PING·조건부 SET·동일 값 GET·양수 TTL·실제 만료를 검사합니다. 키 TTL은 1초, 전체 검사는 최대 5초이며 동시 실행은 프로세스당 4개입니다. 기존 키 삭제·전체 flush·임의 키 조회는 제공하지 않습니다.
+
+`GET /cache/items/{1..3}`은 60초 TTL로 고정 샘플을 캐시합니다. 처음에는 `cache=miss, source=fixture`, 이후 `cache=hit, source=cache`입니다. 연결 실패는 `cache=unavailable`, 비정상 값은 `cache=invalid`로 표시하며 안전한 fixture로 HTTP 200을 반환합니다. `/health`는 캐시 장애로 실패하지 않습니다.
+
+AWS와 GCP의 Redis는 독립 캐시이며 복제·이전하지 않습니다. 전환 후 빈 캐시는 같은 fixture에서 다시 채웁니다. fixture는 업무 DB·세션·주문 저장소가 아닙니다.
+
+```bash
+curl --fail-with-body https://smoke.sbhunter.site/cache/health
+curl --fail-with-body -X POST https://smoke.sbhunter.site/cache/check
+curl --fail-with-body https://smoke.sbhunter.site/cache/items/1
+```
+
+로컬 검증은 Docker·OpenSSL·Python 3.13 환경에서 실행합니다. 실제 TLS Redis와 잘못된 인증정보·CA·호스트명, 연결 중단·복구까지 검사하고 테스트 컨테이너를 제거합니다.
+
+```bash
+uv pip sync --python .venv/bin/python requirements-dev.txt
+bash scripts/test-cache.sh
+```
+
 
 ## 의존성 갱신
 
