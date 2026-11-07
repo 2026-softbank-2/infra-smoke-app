@@ -2,7 +2,7 @@
 
 AWS·GCP 배포 및 트래픽 전환 검증용 최소 FastAPI 애플리케이션입니다.
 Hunter의 ECS Fargate·Cloud Run에서 동일한 컨테이너 이미지를 실행합니다.
-Redis는 선택적으로 연결하며, DB·파일 저장소·클라우드 SDK 없이 동작합니다. 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
+Redis·PostgreSQL은 선택적으로 연결하며, 미설정 상태에서도 기본 HTTP 응답을 제공합니다. 파일 저장소·클라우드 SDK는 포함하지 않습니다. 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
 
 ## HTTP API
 
@@ -13,6 +13,8 @@ Redis는 선택적으로 연결하며, DB·파일 저장소·클라우드 SDK �
 | `GET /cache/health` | Redis PING 성공 시 200, 미설정·연결 실패 시 503 | TLS·인증·연결 확인 |
 | `POST /cache/check` | PING·SET·GET·TTL·실제 만료 검사 결과 | 전부 통과하면 200, 실패·미설정이면 503 |
 | `GET /cache/items/1` | 고정 샘플과 `cache`·`source` | miss → hit, 캐시 장애 시 fixture 응답 |
+| `GET /db/health`, `POST /db/check` | 쿼리·TLS·읽기 전용 여부 | 기존 PostgreSQL의 실제 연결 확인 |
+| `GET /db/products` | 최대 10개 상품 | 명시적으로 켠 경우 기존 Hunter 데모 DB 조회 |
 
 루트 응답 예시:
 
@@ -126,6 +128,30 @@ bash scripts/test-cache.sh
 ```
 
 
+## 온프렘과 PostgreSQL
+
+온프렘에서는 `APP_ENV=onprem`으로 표시하며 ARM64 이미지를 빌드합니다. VM·K3s·Redis·Tunnel은 [hunter-infra](https://github.com/2026-softbank-2/hunter-infra)의 `onprem/`에서 관리합니다. 온프렘 PostgreSQL은 새로 생성하지 않고 기존 클라우드 DB를 사용합니다.
+
+| 환경변수 | 동작 |
+|---|---|
+| `DB_HOST` | 미설정이면 DB API는 503. 기본 HTTP·캐시 기능은 정상 |
+| `DB_HOSTADDR` | 선택적 접속 IP. 사설 릴레이를 사용해도 TLS는 `DB_HOST`의 원래 서버 이름으로 검증 |
+| `DB_PORT` | 기본 5432 |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD` | 기존 DB의 앱 계정. 비밀번호는 Secret으로 전달 |
+| `DB_SSLMODE` | `verify-full`만 허용 |
+| `DB_CA_FILE` | 마운트한 CA 인증서 묶음의 경로 |
+| `DB_SAMPLE_CATALOG` | `true`일 때만 기존 `products` 테이블의 최대 10개 행 조회 |
+
+DB 요청은 동시 연결 슬롯 대기부터 트랜잭션 종료·연결 정리까지 총 6초, 동시 연결 4개로 제한합니다. 마지막 0.25초는 정리에 남겨 두고, 시간 초과나 호출자 취소 시 소켓을 먼저 닫아 Psycopg의 추가 취소 대기를 피합니다. 정리가 끝나기 전에는 슬롯을 반환하지 않습니다. `/ready`의 DB·캐시 검사는 병렬로 실행합니다. 서버의 `default_transaction_read_only=on`, 쿼리 제한 2초, 잠금 대기 제한 1초를 적용합니다. `/db/check`는 실제 쿼리와 `pg_stat_ssl`로 TLS·읽기 전용 상태를 확인합니다. 자동 스키마 생성·마이그레이션·테이블 쓰기는 수행하지 않습니다. DB 장애·인증 오류는 503으로 구분하고, 오류 원문·접속 주소·비밀번호는 응답에 담지 않습니다. `/health`는 독립적으로 200을 유지합니다.
+
+DB 검사는 연결·조회 검증이며 데이터 최신성·CDC 동기화·업무 계정의 쓰기 전환 완료를 의미하지 않습니다. 기존 배포에 `DB_HOST`를 추가하지 않으면 이전 HTTP·캐시 동작을 유지합니다.
+
+```bash
+bash scripts/test-database.sh
+```
+
+이 검사는 소유한 임시 TLS PostgreSQL 컨테이너에서 실제 조회, 잘못된 비밀번호·CA·호스트명 거부, 서버의 쓰기 차단과 연결 복구를 확인하고 컨테이너를 제거합니다. 초기화 중인 소켓 전용 서버를 제외하고 최종 TCP 서버를 기다리며, 준비 실패·컨테이너 종료·대기 초과 시 테스트를 시작하지 않습니다. TLS 바이트를 그대로 전달하는 격리 릴레이로 조회·커밋·연결 중 패킷 유실, 호출자 취소, 연결 슬롯 포화, `/ready`의 전체 응답 시간과 작업·소켓 회수를 검증합니다. 클라우드 DB를 테스트 fixture로 사용하지 않습니다.
+
 ## 의존성 갱신
 
 `requirements.in`에서 직접 의존성 버전을 관리하고, `requirements.txt`에 전이 의존성까지 고정합니다. 갱신할 때만 `uv`를 사용하며 앱 실행·Docker 빌드에는 필요하지 않습니다.
@@ -142,3 +168,15 @@ uv pip compile requirements.in --python-version 3.13 --universal \
 - [Cloud Run 컨테이너 규약](https://docs.cloud.google.com/run/docs/container-contract): `PORT`, `K_SERVICE`, 수신 주소와 이미지 아키텍처
 - [ECS 환경변수](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-environment-variables.html): `AWS_EXECUTION_ENV`
 - [FastAPI 컨테이너 배포](https://fastapi.tiangolo.com/deployment/docker/): 실행 명령과 종료 신호 처리
+
+## 카나리 관제 계약
+
+`GET /ready`는 Redis와 설정된 PostgreSQL이 준비됐을 때 200을 반환합니다. 프로세스 생존 검사는 `/health`를 사용하고, 트래픽 수신 자격은 `/ready`로 확인합니다. `GET /runtime`은 `env`, `workload`, `version`, `database_binding`, `database_identity`를 반환합니다.
+
+- `APP_WORKLOAD`: 기본 `smoke`. 앱마다 고유한 지표 식별자를 설정합니다.
+- `DB_BINDING`: 공유 PostgreSQL의 운영 식별자입니다. DB 설정 시 기본 `unverified`이므로 관제 등록값과 별도로 맞춰야 합니다.
+- `database_identity`: TLS로 인증하는 `DB_HOST`와 `DB_NAME`의 SHA-256 지문입니다. 계산 입력은 compact ASCII JSON `[DB_HOST.lower().rstrip("."), DB_NAME]`이며 비밀번호·릴레이 IP·포트는 포함하지 않습니다.
+- `GET /metrics`: `http_server_requests_seconds` histogram과 `hunter_runtime_info`를 Prometheus 형식으로 제공합니다. 메서드·라우트 템플릿·상태 코드·workload만 라벨로 사용하며 URL 쿼리·임의 경로·요청 헤더는 수집하지 않습니다.
+- `METRICS_BEARER_TOKEN`: 설정하면 `/metrics`에 동일한 Bearer 토큰을 요구합니다. 수집 토큰은 비밀 저장소에서 주입합니다.
+
+플랫폼 공유 DB 이전은 등록된 DB 지문·DB 식별자·`APP_VERSION`을 출발/대상 런타임과 대조하고 `/ready`를 확인합니다. 런타임 메타데이터는 선언한 설정이며, 이미지 digest와 소스 일치는 배포 절차에서 별도로 검증합니다. 이 변경을 사용하려면 같은 검증된 이미지를 각 환경에 배포하고 workload/env별 수집 대상을 연결해야 합니다.
