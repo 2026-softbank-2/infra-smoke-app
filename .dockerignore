@@ -3,4 +3,5 @@
 !main.py
 !cache.py
 !database.py
+!telemetry.py
 !requirements.txt

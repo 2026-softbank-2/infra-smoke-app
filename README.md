@@ -168,3 +168,15 @@ uv pip compile requirements.in --python-version 3.13 --universal \
 - [Cloud Run 컨테이너 규약](https://docs.cloud.google.com/run/docs/container-contract): `PORT`, `K_SERVICE`, 수신 주소와 이미지 아키텍처
 - [ECS 환경변수](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-environment-variables.html): `AWS_EXECUTION_ENV`
 - [FastAPI 컨테이너 배포](https://fastapi.tiangolo.com/deployment/docker/): 실행 명령과 종료 신호 처리
+
+## 카나리 관제 계약
+
+`GET /ready`는 Redis와 설정된 PostgreSQL이 준비됐을 때 200을 반환합니다. 프로세스 생존 검사는 `/health`를 사용하고, 트래픽 수신 자격은 `/ready`로 확인합니다. `GET /runtime`은 `env`, `workload`, `version`, `database_binding`, `database_identity`를 반환합니다.
+
+- `APP_WORKLOAD`: 기본 `smoke`. 앱마다 고유한 지표 식별자를 설정합니다.
+- `DB_BINDING`: 공유 PostgreSQL의 운영 식별자입니다. DB 설정 시 기본 `unverified`이므로 관제 등록값과 별도로 맞춰야 합니다.
+- `database_identity`: TLS로 인증하는 `DB_HOST`와 `DB_NAME`의 SHA-256 지문입니다. 계산 입력은 compact ASCII JSON `[DB_HOST.lower().rstrip("."), DB_NAME]`이며 비밀번호·릴레이 IP·포트는 포함하지 않습니다.
+- `GET /metrics`: `http_server_requests_seconds` histogram과 `hunter_runtime_info`를 Prometheus 형식으로 제공합니다. 메서드·라우트 템플릿·상태 코드·workload만 라벨로 사용하며 URL 쿼리·임의 경로·요청 헤더는 수집하지 않습니다.
+- `METRICS_BEARER_TOKEN`: 설정하면 `/metrics`에 동일한 Bearer 토큰을 요구합니다. 수집 토큰은 비밀 저장소에서 주입합니다.
+
+플랫폼 공유 DB 이전은 등록된 DB 지문·DB 식별자·`APP_VERSION`을 출발/대상 런타임과 대조하고 `/ready`를 확인합니다. 런타임 메타데이터는 선언한 설정이며, 이미지 digest와 소스 일치는 배포 절차에서 별도로 검증합니다. 이 변경을 사용하려면 같은 검증된 이미지를 각 환경에 배포하고 workload/env별 수집 대상을 연결해야 합니다.

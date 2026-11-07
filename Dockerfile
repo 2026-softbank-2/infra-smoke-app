@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
-COPY main.py cache.py database.py ./
+COPY main.py cache.py database.py telemetry.py ./
 
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}

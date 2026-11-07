@@ -10,6 +10,7 @@ from fastapi import FastAPI, Path, Request, Response
 
 from cache import Cache
 from database import Database
+from telemetry import MetricsMiddleware, Telemetry
 
 
 def deployment_environment() -> str:
@@ -30,6 +31,7 @@ instance_id = uuid4().hex
 async def lifespan(application: FastAPI):
     application.state.cache = Cache.from_environment()
     application.state.database = Database.from_environment()
+    application.state.telemetry = Telemetry(application.state.database.identity())
     try:
         yield
     finally:
@@ -43,6 +45,7 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+app.add_middleware(MetricsMiddleware)
 
 
 @app.middleware("http")
@@ -56,6 +59,28 @@ async def no_store(request: Request, call_next):
 async def health(response: Response) -> dict[str, str]:
     response.headers["Cache-Control"] = "no-store"
     return {"status": "ok", "env": environment}
+
+
+@app.get("/metrics")
+async def metrics(request: Request) -> Response:
+    return request.app.state.telemetry.response(request.headers.get("authorization", ""))
+
+
+@app.get("/ready")
+async def ready(request: Request, response: Response) -> dict:
+    """Traffic eligibility requires the configured DB and local cache, unlike process liveness."""
+    cache_ready = await request.app.state.cache.healthy()
+    database = request.app.state.database
+    db_ready = database.settings is None or (await database.check())["status"] == "ok"
+    response.status_code = 200 if cache_ready and db_ready else 503
+    return {"status": "ok" if response.status_code == 200 else "unavailable", "env": environment,
+            "checks": {"cache": cache_ready, "database": db_ready}}
+
+
+@app.get("/runtime")
+async def runtime(request: Request) -> dict:
+    """Non-secret declared identity; /ready separately verifies the configured dependencies."""
+    return {"env": environment, **request.app.state.telemetry.metadata}
 
 
 @app.get("/")

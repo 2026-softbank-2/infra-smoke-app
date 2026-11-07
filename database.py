@@ -1,6 +1,8 @@
 """Bounded, read-only checks of an existing PostgreSQL database over verified TLS."""
 import asyncio
+import hashlib
 import ipaddress
+import json
 import os
 from pathlib import Path
 import time
@@ -59,6 +61,13 @@ class Database:
             return {"status": "unavailable", "checks": checks}
         return {"status": "ok" if all(checks.values()) else "failed", "checks": checks,
                 "latency_ms": round((time.monotonic() - start) * 1000, 1)}
+
+    def identity(self) -> str:
+        """Bind to the TLS-verified upstream name and DB, independent of relay IP/port and credentials."""
+        if self.settings is None:
+            return "none"
+        upstream = [self.settings["host"].lower().rstrip("."), self.settings["dbname"]]
+        return hashlib.sha256(json.dumps(upstream, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
 
     async def products(self) -> dict:
         if self.settings is None or not self.catalog:
