@@ -26,10 +26,7 @@ docker run -d --name "$container" -p 127.0.0.1::5432 \
   --mount "type=bind,src=$work/init.sql,dst=/docker-entrypoint-initdb.d/init.sql,readonly" \
   --entrypoint bash postgres:17 -ec \
   'cp /certs/server.key /certs/server.crt /tmp/; chown postgres:postgres /tmp/server.*; chmod 600 /tmp/server.key; exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key' >/dev/null
-for attempt in $(seq 1 60); do
-  if docker exec "$container" pg_isready -U postgres -d shop >/dev/null 2>&1; then break; fi
-  sleep 1
-done
+.venv/bin/python scripts/wait-for-postgres.py "$container"
 port=$(docker port "$container" 5432/tcp | sed 's/.*://')
 TEST_DB_CA_FILE="$work/ca.crt" TEST_DB_WRONG_CA_FILE="$work/wrong.crt" TEST_DB_PORT="$port" \
-  .venv/bin/python -m unittest discover -s tests -p test_database.py -v
+  .venv/bin/python -m unittest discover -s tests -p 'test_database*.py' -v

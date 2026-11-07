@@ -1,5 +1,6 @@
 """Minimal HTTP target for Hunter's ECS and Cloud Run infrastructure."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -35,6 +36,7 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
+        await application.state.database.close()
         await application.state.cache.close()
 
 
@@ -69,9 +71,9 @@ async def metrics(request: Request) -> Response:
 @app.get("/ready")
 async def ready(request: Request, response: Response) -> dict:
     """Traffic eligibility requires the configured DB and local cache, unlike process liveness."""
-    cache_ready = await request.app.state.cache.healthy()
     database = request.app.state.database
-    db_ready = database.settings is None or (await database.check())["status"] == "ok"
+    cache_ready, db_result = await asyncio.gather(request.app.state.cache.healthy(), database.check())
+    db_ready = database.settings is None or db_result["status"] == "ok"
     response.status_code = 200 if cache_ready and db_ready else 503
     return {"status": "ok" if response.status_code == 200 else "unavailable", "env": environment,
             "checks": {"cache": cache_ready, "database": db_ready}}
