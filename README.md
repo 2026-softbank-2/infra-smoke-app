@@ -2,7 +2,7 @@
 
 AWS·GCP 배포 및 트래픽 전환 검증용 최소 FastAPI 애플리케이션입니다.
 Hunter의 ECS Fargate·Cloud Run에서 동일한 컨테이너 이미지를 실행합니다.
-Redis는 선택적으로 연결하며, DB·파일 저장소·클라우드 SDK 없이 동작합니다. 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
+Redis·PostgreSQL은 선택적으로 연결하며, 미설정 상태에서도 기본 HTTP 응답을 제공합니다. 파일 저장소·클라우드 SDK는 포함하지 않습니다. 관제 기능은 `hunter-platform`, 인프라 구성은 `hunter-infra`에서 관리합니다.
 
 ## HTTP API
 
@@ -13,6 +13,8 @@ Redis는 선택적으로 연결하며, DB·파일 저장소·클라우드 SDK �
 | `GET /cache/health` | Redis PING 성공 시 200, 미설정·연결 실패 시 503 | TLS·인증·연결 확인 |
 | `POST /cache/check` | PING·SET·GET·TTL·실제 만료 검사 결과 | 전부 통과하면 200, 실패·미설정이면 503 |
 | `GET /cache/items/1` | 고정 샘플과 `cache`·`source` | miss → hit, 캐시 장애 시 fixture 응답 |
+| `GET /db/health`, `POST /db/check` | 쿼리·TLS·읽기 전용 여부 | 기존 PostgreSQL의 실제 연결 확인 |
+| `GET /db/products` | 최대 10개 상품 | 명시적으로 켠 경우 기존 Hunter 데모 DB 조회 |
 
 루트 응답 예시:
 
@@ -125,6 +127,30 @@ uv pip sync --python .venv/bin/python requirements-dev.txt
 bash scripts/test-cache.sh
 ```
 
+
+## 온프렘과 PostgreSQL
+
+온프렘에서는 `APP_ENV=onprem`으로 표시하며 ARM64 이미지를 빌드합니다. VM·K3s·Redis·Tunnel은 [hunter-infra](https://github.com/2026-softbank-2/hunter-infra)의 `onprem/`에서 관리합니다. 온프렘 PostgreSQL은 새로 생성하지 않고 기존 클라우드 DB를 사용합니다.
+
+| 환경변수 | 동작 |
+|---|---|
+| `DB_HOST` | 미설정이면 DB API는 503. 기본 HTTP·캐시 기능은 정상 |
+| `DB_HOSTADDR` | 선택적 접속 IP. 사설 릴레이를 사용해도 TLS는 `DB_HOST`의 원래 서버 이름으로 검증 |
+| `DB_PORT` | 기본 5432 |
+| `DB_NAME`, `DB_USER`, `DB_PASSWORD` | 기존 DB의 앱 계정. 비밀번호는 Secret으로 전달 |
+| `DB_SSLMODE` | `verify-full`만 허용 |
+| `DB_CA_FILE` | 마운트한 CA 인증서 묶음의 경로 |
+| `DB_SAMPLE_CATALOG` | `true`일 때만 기존 `products` 테이블의 최대 10개 행 조회 |
+
+DB 요청은 연결부터 종료까지 6초, 동시 연결 4개로 제한합니다. 서버의 `default_transaction_read_only=on`, 쿼리 제한 2초, 잠금 대기 제한 1초를 적용합니다. `/db/check`는 실제 쿼리와 `pg_stat_ssl`로 TLS·읽기 전용 상태를 확인합니다. 자동 스키마 생성·마이그레이션·테이블 쓰기는 수행하지 않습니다. DB 장애·인증 오류는 503으로 구분하고, 오류 원문·접속 주소·비밀번호는 응답에 담지 않습니다. `/health`는 독립적으로 200을 유지합니다.
+
+DB 검사는 연결·조회 검증이며 데이터 최신성·CDC 동기화·업무 계정의 쓰기 전환 완료를 의미하지 않습니다. 기존 배포에 `DB_HOST`를 추가하지 않으면 이전 HTTP·캐시 동작을 유지합니다.
+
+```bash
+bash scripts/test-database.sh
+```
+
+이 검사는 소유한 임시 TLS PostgreSQL 컨테이너에서 실제 조회, 잘못된 비밀번호·CA·호스트명 거부, 서버의 쓰기 차단과 연결 복구를 확인하고 컨테이너를 제거합니다. 클라우드 DB를 테스트 fixture로 사용하지 않습니다.
 
 ## 의존성 갱신
 

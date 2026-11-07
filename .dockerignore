@@ -2,4 +2,5 @@
 !Dockerfile
 !main.py
 !cache.py
+!database.py
 !requirements.txt

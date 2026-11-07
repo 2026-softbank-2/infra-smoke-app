@@ -9,6 +9,7 @@ import uvicorn
 from fastapi import FastAPI, Path, Request, Response
 
 from cache import Cache
+from database import Database
 
 
 def deployment_environment() -> str:
@@ -28,6 +29,7 @@ instance_id = uuid4().hex
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     application.state.cache = Cache.from_environment()
+    application.state.database = Database.from_environment()
     try:
         yield
     finally:
@@ -84,6 +86,21 @@ async def cache_check(request: Request, response: Response) -> dict:
 @app.get("/cache/items/{item_id}")
 async def cached_item(request: Request, item_id: Annotated[int, Path(ge=1, le=3)]) -> dict:
     return {"env": environment, "version": version, **await request.app.state.cache.sample(item_id)}
+
+
+@app.get("/db/health")
+@app.post("/db/check")
+async def database_check(request: Request, response: Response) -> dict:
+    result = await request.app.state.database.check()
+    response.status_code = 200 if result["status"] == "ok" else 503
+    return {"env": environment, "version": version, **result}
+
+
+@app.get("/db/products")
+async def database_products(request: Request, response: Response) -> dict:
+    result = await request.app.state.database.products()
+    response.status_code = 200 if result["status"] == "ok" else 503
+    return {"env": environment, "version": version, **result}
 
 
 if __name__ == "__main__":
