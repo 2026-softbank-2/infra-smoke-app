@@ -3,11 +3,13 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path as FilePath
 from typing import Annotated
 from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Path, Request, Response
+from fastapi.responses import HTMLResponse
 
 from cache import Cache
 from database import Database
@@ -27,6 +29,7 @@ def deployment_environment() -> str:
 environment = deployment_environment()
 version = os.getenv("APP_VERSION", "dev")
 instance_id = uuid4().hex
+dashboard_html = FilePath(__file__).with_name("dashboard.html").read_text()
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -85,15 +88,30 @@ async def runtime(request: Request) -> dict:
     return {"env": environment, **request.app.state.telemetry.metadata}
 
 
-@app.get("/")
-async def index(response: Response) -> dict[str, str]:
+@app.get("/", response_model=None)
+async def index(request: Request, response: Response):
     response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Accept"
+    if "text/html" in request.headers.get("accept", ""):
+        return HTMLResponse(dashboard_html, headers={"Vary": "Accept"})
     return {
         "service": "infra-smoke-app",
         "env": environment,
         "version": version,
         "instance_id": instance_id,
     }
+
+
+@app.get("/api/status")
+async def dashboard_status(request: Request) -> dict:
+    """One response binds all checks to the same instance behind multi-cloud routing."""
+    cache = request.app.state.cache
+    database = request.app.state.database
+    cache_ready, db = await asyncio.gather(cache.healthy(), database.check())
+    cache_status = "unconfigured" if cache.client is None else "ok" if cache_ready else "unavailable"
+    return {"service": "infra-smoke-app", "env": environment, "instance_id": instance_id,
+            **request.app.state.telemetry.metadata, "application": {"status": "ok"},
+            "cache": {"status": cache_status, "checks": {"ping": cache_ready}}, "database": db}
 
 
 @app.get("/cache/health")

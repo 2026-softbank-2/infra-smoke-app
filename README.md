@@ -9,14 +9,17 @@ Redis·PostgreSQL은 선택적으로 연결하며, 미설정 상태에서도 기
 | 경로 | 응답 | 용도 |
 |---|---|---|
 | `GET /health` | `{"status":"ok","env":"aws"}` | 앱 HTTP 응답 확인: HAProxy·AWS ALB 헬스체크와 Cloud Run 시작 검사 |
-| `GET /` | 서비스 이름, 실행 환경, 버전, 인스턴스 식별자 | 실제 응답 클라우드·배포 버전·프로세스 구분 |
+| `GET /` | 브라우저는 상태 대시보드, 그 외는 기존 JSON | 실제 응답 클라우드·배포 버전·프로세스 구분 |
+| `GET /api/status` | 같은 인스턴스의 메타데이터·Redis PING·DB 읽기 검사 | 대시보드 상태 갱신; 개별 상태는 각 `status`로 확인 |
 | `GET /cache/health` | Redis PING 성공 시 200, 미설정·연결 실패 시 503 | TLS·인증·연결 확인 |
 | `POST /cache/check` | PING·SET·GET·TTL·실제 만료 검사 결과 | 전부 통과하면 200, 실패·미설정이면 503 |
 | `GET /cache/items/1` | 고정 샘플과 `cache`·`source` | miss → hit, 캐시 장애 시 fixture 응답 |
 | `GET /db/health`, `POST /db/check` | 쿼리·TLS·읽기 전용 여부 | 기존 PostgreSQL의 실제 연결 확인 |
 | `GET /db/products` | 최대 10개 상품 | 명시적으로 켠 경우 기존 Hunter 데모 DB 조회 |
 
-루트 응답 예시:
+브라우저(`Accept: text/html`)에서는 실행 환경·버전·인스턴스와 앱·DB·캐시 상태를 표시합니다. 새로고침마다 응답 환경이 달라질 수 있으며, 한 상태 응답 안의 검사는 같은 인스턴스에서 수행됩니다. Redis 쓰기·만료 검사는 버튼으로 실행하고 실제 처리 환경을 결과에 표시합니다. 자격 증명·접속 주소는 노출하지 않습니다.
+
+기존 JSON 클라이언트의 루트 응답 예시:
 
 ```json
 {
