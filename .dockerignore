@@ -1,6 +1,7 @@
 *
 !Dockerfile
 !main.py
+!dashboard.html
 !cache.py
 !database.py
 !telemetry.py
